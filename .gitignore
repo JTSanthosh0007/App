@@ -41,3 +41,5 @@ out/
 Thumbs.db
 
 .vercel
+
+firebase-service-account.json
