@@ -23,6 +23,15 @@ import string
 from datetime import datetime
 from functools import lru_cache
 import concurrent.futures
+from flask import Flask, jsonify
+from flask_cors import CORS
+
+app = Flask(__name__)
+CORS(app)
+
+@app.route('/health')
+def health_check():
+    return jsonify({"status": "healthy", "message": "Service is running"}), 200
 
 # Must be the first Streamlit command
 st.set_page_config(

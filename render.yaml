@@ -2,8 +2,16 @@ services:
   - type: web
     name: statement-parser-backend
     env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    buildCommand: |
+      pip install -r requirements.txt
+      pip install gunicorn
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
     envVars:
       - key: PYTHON_VERSION
-        value: 3.9.18 
+        value: 3.9.18
+      - key: PORT
+        value: 10000
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_PUBLIC_API_URL
+        value: https://statement-parser-backend.onrender.com 
