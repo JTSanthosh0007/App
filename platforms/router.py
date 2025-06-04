@@ -148,53 +148,38 @@ def show_platform_grid():
             
     st.markdown('</div>', unsafe_allow_html=True)
 
-def route_to_platform(platform_name, username):
-    """Route to appropriate platform page"""
-    try:
-        # Clear everything
-        st.empty()
+def route_to_platform(platform_name, username=None):
+    """Route to the appropriate platform analyzer"""
+    
+    # Clear any previous analysis results
+    if 'analysis_results' in st.session_state:
+        del st.session_state.analysis_results
+    
+    # Set the current platform
+    st.session_state.current_platform = platform_name
+    
+    # Route to the appropriate platform
+    if platform_name == "PhonePe":
+        from platforms.phonepe import show_phonepe_page
+        show_phonepe_page(username)
+    elif platform_name == "Google Pay":
+        from platforms.googlepay import show_googlepay_page
+        show_googlepay_page(username)
+    # Add more platforms as needed
+    else:
+        # Add a header row with back button
+        col_back, col_title = st.columns([1, 3])
         
-        # Back button with styling
-        st.markdown("""
-            <style>
-            .back-button {
-                position: fixed;
-                top: 0.5rem;
-                left: 1rem;
-                z-index: 1000;
-            }
-            .back-button button {
-                background-color: rgba(30,30,30,0.9) !important;
-                border: 1px solid rgba(255,255,255,0.1) !important;
-                color: #cccccc !important;
-                padding: 0.4rem 1rem !important;
-                font-size: 0.9rem !important;
-                border-radius: 0.5rem !important;
-            }
-            .back-button button:hover {
-                background-color: rgba(40,40,40,0.9) !important;
-                border-color: rgba(255,255,255,0.2) !important;
-                color: white !important;
-            }
-            </style>
-        """, unsafe_allow_html=True)
-
-        # Back button in a clean container
-        with st.container():
-            st.markdown('<div class="back-button">', unsafe_allow_html=True)
-            if st.button("← Back to Platforms"):
-                del st.session_state.selected_platform
+        with col_back:
+            if st.button("← Back", key="platform_back_btn"):
+                st.session_state.current_page = 'dashboard'
                 st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        # Route to appropriate platform
-        if platform_name == 'PhonePe':
-            show_phonepe_page(username)
-        elif platform_name in ['Paytm UPI', 'Paytm']:
-            show_paytm_page(username)
-        else:
-            st.info(f"Support for {platform_name} is coming soon!")
-            
-    except Exception as e:
-        st.error(f"Error analyzing statement: {str(e)}")
-        st.error("Please make sure you're uploading a valid statement file.") 
+        
+        with col_title:
+            st.title(f"{platform_name} Statement Analyzer")
+        
+        # Show coming soon message
+        st.info(f"{platform_name} statement analysis is coming soon!")
+        
+        # Add a placeholder image
+        st.image("https://via.placeholder.com/800x400?text=Coming+Soon", use_container_width=True) 

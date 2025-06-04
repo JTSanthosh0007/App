@@ -1,11 +1,11 @@
 import streamlit as st
 from statement_parser import StatementParser
+import time
 import pandas as pd
 import logging
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
-import time  # Import time module
 
 logger = logging.getLogger(__name__)
 
@@ -160,12 +160,11 @@ def show_phonepe_page(username):
         </style>
     """, unsafe_allow_html=True)
 
-    # Show header with logo from the provided URL
+    # Show header
     st.markdown(
         """
         <div class="platform-header">
-            <img src="https://cdn.freelogovectors.net/wp-content/uploads/2023/11/phonepelogo-freelogovectors.net_.png" alt="Logo" style="width: 100px; height: auto;">
-            <h1>PhonePe Statement Analyzer</h1>
+            <h1>📱 PhonePe Statement Analyzer</h1>
             <p>Upload your PhonePe statement to analyze your transactions</p>
         </div>
         """, 
@@ -178,14 +177,14 @@ def show_phonepe_page(username):
     )
 
     if uploaded_file:
-        with st.spinner("Processing your files… This may take a few minutes to complete."):
+        with st.spinner("Analyzing your statement... Please wait."):
             try:
                 parser = StatementParser(uploaded_file)
                 df = parser.parse()
                 
                 # Log the raw DataFrame for debugging
                 logger.info(f"Raw DataFrame after parsing: {df}")
-            
+
                 if df is not None and not df.empty:
                     # Clean the data
                     df = clean_transaction_data(df)
@@ -194,101 +193,79 @@ def show_phonepe_page(username):
                     logger.info(f"Cleaned DataFrame: {df}")
 
                     st.success("Statement processed successfully!")
-                
-                # Transaction Summary Section
-                st.subheader("💳 Transaction Summary")
-                col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
+                    
+                    # Transaction Summary Section
+                    st.subheader("💳 Transaction Summary")
+                    col1, col2, col3, col4, col5 = st.columns(5)
+                    
+                    with col1:
+                        total_transactions = len(df)
+                        st.metric("Total Transactions", total_transactions)
+                    
+                    with col2:
+                        credits = df[df['amount'] > 0]['amount'].sum()
+                        st.metric("Total Credits", f"₹{credits:,.2f}")
+                    
+                    with col3:
+                        debits = abs(df[df['amount'] < 0]['amount'].sum())
+                        st.metric("Total Debits", f"₹{debits:,.2f}")
+                    
+                    with col4:
+                        net_balance = credits - debits
+                        st.metric("Net Balance", f"₹{net_balance:,.2f}")
+                    
+                    with col5:
+                        avg_transaction = df['amount'].abs().mean()
+                        st.metric("Avg. Transaction", f"₹{avg_transaction:,.2f}")
 
-                with col1:
-                    total_transactions = len(df)
-                    st.metric("Total Transactions", total_transactions)
+                    # Search and Filter Section
+                    st.subheader("🔍 Search & Filter")
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        search_term = st.text_input("Search in descriptions", "")
+                    with col2:
+                        if 'type' in df.columns:
+                            selected_types = st.multiselect(
+                                "Filter by type",
+                                options=['All'] + list(df['type'].unique()),
+                                default='All'
+                            )
 
-                with col2:
-                    credits = df[df['amount'] > 0]['amount'].sum()
-                    st.metric("Total Credits", f"₹{credits:,.2f}")
+                    # Apply filters
+                    filtered_df = df.copy()
+                    if search_term:
+                        filtered_df = filtered_df[
+                            filtered_df['description'].str.contains(search_term, case=False, na=False)
+                        ]
+                    if 'type' in df.columns and selected_types and 'All' not in selected_types:
+                        filtered_df = filtered_df[filtered_df['type'].isin(selected_types)]
 
-                with col3:
-                    debits = abs(df[df['amount'] < 0]['amount'].sum())
-                    st.metric("Total Debits", f"₹{debits:,.2f}")
+                    # Show transaction analysis
+                    show_transaction_analysis(filtered_df)
+                    
+                    # Recent Transactions
+                    st.subheader("📝 Recent Transactions")
+                    st.dataframe(
+                        filtered_df.sort_values('date', ascending=False),
+                        column_config={
+                            "date": "Date",
+                            "amount": st.column_config.NumberColumn(
+                                "Amount",
+                                format="₹%.2f"
+                            ),
+                            "category": "Category",
+                            "description": "Description"
+                        },
+                        hide_index=True,
+                        use_container_width=True
+                    )
 
-                with col4:
-                    net_balance = credits - debits
-                    st.metric("Net Balance", f"₹{net_balance:,.2f}")
-                
-                with col5:
-                    avg_transaction = df['amount'].abs().mean()
-                    st.metric("Avg. Transaction", f"₹{avg_transaction:,.2f}")
-                
-                # New metrics for highest and lowest amounts
-                with col6:
-                    highest_amount = df['amount'].max()
-                    highest_date = df.loc[df['amount'] == highest_amount, 'date'].values[0]
-                    highest_person = df.loc[df['amount'] == highest_amount, 'description'].values[0]  # Assuming 'description' holds the person's name
-                    highest_date = pd.to_datetime(highest_date).to_pydatetime()
-                    st.metric("Highest Amount", f"₹{highest_amount:,.2f}")
-
-                    # Show details for 10 seconds
-                    details_placeholder = st.empty()
-                    details_placeholder.write(f"Highest Amount: ₹{highest_amount:,.2f} on {highest_date.strftime('%Y-%m-%d')} by {highest_person}")
-                    time.sleep(10)  # Wait for 10 seconds
-                    details_placeholder.empty()  # Clear the placeholder
-
-                with col7:
-                    lowest_amount = df[df['amount'] > 0]['amount'].min()  # Only consider positive amounts
-                    lowest_date = df.loc[df['amount'] == lowest_amount, 'date'].values[0]
-                    lowest_person = df.loc[df['amount'] == lowest_amount, 'description'].values[0]  # Assuming 'description' holds the person's name
-                    lowest_date = pd.to_datetime(lowest_date).to_pydatetime()
-                    st.metric("Lowest Amount", f"₹{lowest_amount:,.2f}")
-
-                    # Show details for 10 seconds
-                    details_placeholder = st.empty()
-                    details_placeholder.write(f"Lowest Amount: ₹{lowest_amount:,.2f} on {lowest_date.strftime('%Y-%m-%d')} by {lowest_person}")
-                    time.sleep(10)  # Wait for 10 seconds
-                    details_placeholder.empty()  # Clear the placeholder
-
-                # Search and Filter Section
-                st.subheader("🔍 Search & Filter")
-                col1, col2 = st.columns(2)
-
-                with col1:
-                    search_term = st.text_input("Search in descriptions", "")
-                with col2:
-                    if 'type' in df.columns:
-                        selected_types = st.multiselect(
-                            "Filter by type",
-                            options=['All'] + list(df['type'].unique()),
-                            default='All'
-                        )
-
-                # Apply filters
-                filtered_df = df.copy()
-                if search_term:
-                    filtered_df = filtered_df[
-                        filtered_df['description'].str.contains(search_term, case=False, na=False)
-                    ]
-                if 'type' in df.columns and selected_types and 'All' not in selected_types:
-                    filtered_df = filtered_df[filtered_df['type'].isin(selected_types)]
-
-                # Show transaction analysis
-                show_transaction_analysis(filtered_df)
-                
-                # Recent Transactions
-                st.subheader("📝 Recent Transactions")
-                st.dataframe(
-                    filtered_df.sort_values('date', ascending=False),
-                    column_config={
-                        "date": "Date",
-                        "amount": st.column_config.NumberColumn(
-                            "Amount",
-                            format="₹%.2f"
-                        ),
-                        "category": "Category",
-                        "description": "Description"
-                    },
-                    hide_index=True,
-                    use_container_width=True
-                )
+                else:
+                    st.error("No transactions found in the statement.")
+                    st.info("Please ensure you've uploaded a valid PhonePe statement")
 
             except Exception as e:
-                logger.error(f"Error processing file: {str(e)}")
-                st.error("An error occurred while processing the file.")
+                st.error(f"Error processing statement: {str(e)}")
+                logger.error(f"Error in show_phonepe_page: {str(e)}")
+                st.info("Please try uploading the statement again")

@@ -1,266 +1,367 @@
 import streamlit as st
 from platforms.router import route_to_platform
+from supabase_config import get_client
+from datetime import datetime
 
-def display_grid(platforms):
+def display_grid(platforms, all_platforms):
     """Helper function to display platforms in a grid"""
-    cols = st.columns(8)
-    for idx, (platform, details) in enumerate(platforms.items()):
-        with cols[idx % 8]:
-            if st.button(
-                f"{details['icon']}\n{platform}\n{details['status']}", 
-                key=f"{details['category']}_{platform}",
-                use_container_width=True,
-                disabled=details['status'] != 'Available'
-            ):
-                st.session_state.selected_platform = platform
-                route_to_platform(platform, st.session_state.username)
-                return
+    cols = st.columns(4)
+    for i, platform_name in enumerate(platforms):
+        with cols[i % 4]:
+            # Get platform details
+            platform = all_platforms[platform_name]
+            
+            # Determine if platform is available
+            is_available = platform['status'] == 'Available'
+            
+            # Create a card with visual indication of availability
+            card_class = "platform-card" if is_available else "platform-card disabled"
+            status_class = "status-available" if is_available else "status-coming-soon"
+            
+            st.markdown(f"""
+                <div class="{card_class}">
+                    <div class="platform-icon">{platform['icon']}</div>
+                    <div class="platform-name">{platform_name}</div>
+                    <div class="platform-status {status_class}">{platform['status']}</div>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # Button with the same styling as the card
+            if st.button(f"Select", key=f"btn_{platform_name}", 
+                        disabled=not is_available,
+                        use_container_width=True):
+                st.session_state.selected_platform = platform_name
+                st.rerun()
 
 def show_platform_select(username):
-    # If a platform is selected, route to it and return immediately
-    if 'selected_platform' in st.session_state:
-        route_to_platform(st.session_state.selected_platform, username)
-        return
-
-    # Only show the platform selection if no platform is selected
     st.title(f"Welcome {username}! 👋")
-    st.markdown("Select your preferred payment method to analyze statements")
     
     # Add custom CSS
     st.markdown("""
         <style>
-        .platform-container {
+        .platform-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
-            gap: 0.5rem;
-            padding: 0.75rem;
-            background: #000000;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 20px;
         }
         .platform-card {
-            background: #111111;
-            border-radius: 6px;
-            padding: 0.5rem;
+            background: #1A1A1A;
+            border-radius: 12px;
+            padding: 20px;
             text-align: center;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            border: 1px solid #333333;
-            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+            min-height: 160px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
         }
-        .platform-card:hover {
-            transform: translateY(-3px);
-            background: #222222;
-            border-color: #ffffff;
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-        }
-        .platform-icon {
-            font-size: 1.5rem;
-            margin-bottom: 0.25rem;
-            filter: grayscale(100%);
-            transition: all 0.3s ease;
+        .platform-logo {
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: 500;
+            color: white;
+            margin-bottom: 4px;
         }
         .platform-name {
-            color: #ffffff;
-            font-size: 0.7rem;
-            font-weight: 500;
-            margin-bottom: 0.2rem;
+            color: white;
+            font-size: 14px;
+            margin: 0;
+            font-weight: 400;
         }
         .platform-status {
-            font-size: 0.6rem;
-            color: #888888;
-            margin-top: 0.2rem;
-        }
-        .status-available {
-            color: #00ff00;
-        }
-        .status-coming-soon {
-            color: #888888;
-        }
-        .category-header {
-            color: #ffffff;
-            font-size: 1rem;
-            font-weight: 600;
-            margin: 1rem 0 0.5rem 0;
-            padding-bottom: 0.3rem;
-            border-bottom: 1px solid #333333;
-        }
-        .stButton button {
-            background-color: #222222;
-            color: white;
-            border: 1px solid #333333;
-            padding: 0.4rem;
-            text-align: center;
-            transition: all 0.2s ease;
-            height: auto;
-            white-space: pre-wrap;
-            font-size: 0.65rem;
-            min-height: 0;
+            font-size: 12px;
+            margin: 0;
             line-height: 1.2;
         }
-        .stButton button:hover:not([disabled]) {
-            transform: translateY(-2px);
-            background-color: #333333;
-            border-color: white;
+        .status-available {
+            color: #4CAF50;
         }
-        .stButton button[disabled] {
-            opacity: 0.6;
-            cursor: not-allowed;
+        .status-coming-soon {
+            color: rgba(255, 255, 255, 0.5);
+        }
+        .section-header {
+            color: #2196F3;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 24px 0 16px 0;
+        }
+        .stButton > button {
+            background-color: #2196F3 !important;
+            color: white !important;
+            border: none !important;
+            border-radius: 6px !important;
+            padding: 8px !important;
+            font-size: 14px !important;
+            font-weight: 400 !important;
+            height: 36px !important;
+            width: 100% !important;
+            margin-top: 8px !important;
+            text-transform: none !important;
+        }
+        .stButton > button:disabled {
+            background-color: rgba(255, 255, 255, 0.1) !important;
+            color: rgba(255, 255, 255, 0.5) !important;
+        }
+        .activity-item {
+            background: #1A1A1A;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .activity-platform {
+            color: white;
+            font-weight: 500;
+        }
+        .activity-amount {
+            color: #4CAF50;
+            font-weight: 500;
+        }
+        .activity-date {
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 12px;
         }
         </style>
     """, unsafe_allow_html=True)
 
-    # Add search box
-    search = st.text_input(
-        "🔍 Search for your bank or payment platform",
-        key="platform_search",
-        help="Type to search for any bank or payment platform"
-    )
-
-    # Update the all_platforms dictionary to show only PhonePe and Paytm as available
+    # Define all platforms
     all_platforms = {
-        # UPI Platforms - Only PhonePe and Paytm are available
-        'Paytm UPI': {'icon': '💰', 'status': 'Available', 'category': 'UPI'},
-        'PhonePe': {'icon': '📱', 'status': 'Available', 'category': 'UPI'},
-        'Google Pay': {'icon': '💳', 'status': 'Coming Soon', 'category': 'UPI'},
-        'BHIM': {'icon': '🇮🇳', 'status': 'Coming Soon', 'category': 'UPI'},
-        'WhatsApp Pay': {'icon': '💬', 'status': 'Coming Soon', 'category': 'UPI'},
-        'Amazon Pay': {'icon': '🛒', 'status': 'Coming Soon', 'category': 'UPI'},
-        
-        # Public Sector Banks - All set to Coming Soon
-        'State Bank of India': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Public Sector Bank'},
-        'Bank of Baroda': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Public Sector Bank'},
-        'Bank of India': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Public Sector Bank'},
-        'Bank of Maharashtra': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Public Sector Bank'},
-        'Canara Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Public Sector Bank'},
-        'Central Bank of India': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Public Sector Bank'},
-        'Indian Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Public Sector Bank'},
-        'Indian Overseas Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Public Sector Bank'},
-        'Punjab & Sind Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Public Sector Bank'},
-        'Punjab National Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Public Sector Bank'},
-        'UCO Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Public Sector Bank'},
-        'Union Bank of India': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Public Sector Bank'},
-
-        # Private Sector Banks - All set to Coming Soon
-        'Axis Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'Bandhan Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'CSB Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'City Union Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'DCB Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'Dhanlaxmi Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'Federal Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'HDFC Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'ICICI Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'IDBI Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'IDFC First Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'IndusInd Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'Jammu & Kashmir Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'Karnataka Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'Karur Vysya Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'Kotak Mahindra Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'Nainital Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'RBL Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'South Indian Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'Tamilnad Mercantile Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-        'YES Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Private Sector Bank'},
-
-        # Small Finance Banks - All set to Coming Soon
-        'AU Small Finance Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Small Finance Bank'},
-        'Capital Small Finance Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Small Finance Bank'},
-        'Equitas Small Finance Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Small Finance Bank'},
-        'ESAF Small Finance Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Small Finance Bank'},
-        'Suryoday Small Finance Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Small Finance Bank'},
-        'Ujjivan Small Finance Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Small Finance Bank'},
-        'Utkarsh Small Finance Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Small Finance Bank'},
-        'North East Small Finance Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Small Finance Bank'},
-        'Jana Small Finance Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Small Finance Bank'},
-        'Shivalik Small Finance Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Small Finance Bank'},
-        'Unity Small Finance Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Small Finance Bank'},
-
-        # Payment Banks - All set to Coming Soon
-        'Airtel Payments Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Payment Bank'},
-        'India Post Payments Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Payment Bank'},
-        'FINO Payments Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Payment Bank'},
-        'Paytm Payments Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Payment Bank'},
-        'Jio Payments Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Payment Bank'},
-        'NSDL Payments Bank': {'icon': '🏦', 'status': 'Coming Soon', 'category': 'Payment Bank'},
+        'WhatsApp Pay': {
+            'status': 'Coming Soon', 
+            'category': 'UPI',
+            'logo': '<div class="platform-logo" style="background: #25D366;">Wa</div>'
+        },
+        'Paytm UPI': {
+            'status': 'Available', 
+            'category': 'UPI',
+            'logo': '<div class="platform-logo" style="background: #00B9F1;">Pay</div>'
+        },
+        'PhonePe': {
+            'status': 'Available', 
+            'category': 'UPI',
+            'logo': '<div class="platform-logo" style="background: #5F259F;">Pe</div>'
+        },
+        'Google Pay': {
+            'status': 'Coming Soon', 
+            'category': 'UPI',
+            'logo': '<div class="platform-logo" style="background: #FFFFFF; color: #000;">G</div>'
+        },
+        'BHIM': {
+            'status': 'Coming Soon', 
+            'category': 'UPI',
+            'logo': '<div class="platform-logo" style="background: #00345B;">IN</div>'
+        },
+        'Amazon Pay': {
+            'status': 'Coming Soon', 
+            'category': 'UPI',
+            'logo': '<div class="platform-logo" style="background: #FF9900;">Am</div>'
+        },
+        # Banks (only shown when searched)
+        'SBI': {
+            'status': 'Coming Soon', 
+            'category': 'Public Sector Bank', 
+            'full_name': 'State Bank of India',
+            'logo': '<div class="platform-logo" style="background: #2d4b8e;">SBI</div>'
+        },
+        'BOB': {
+            'status': 'Coming Soon', 
+            'category': 'Public Sector Bank', 
+            'full_name': 'Bank of Baroda',
+            'logo': '<div class="platform-logo" style="background: #2d4b8e;">BOB</div>'
+        },
+        'HDFC': {
+            'status': 'Coming Soon', 
+            'category': 'Private Sector Bank', 
+            'full_name': 'HDFC Bank',
+            'logo': '<div class="platform-logo" style="background: #004C8F;">HDFC</div>'
+        },
+        'ICICI': {
+            'status': 'Coming Soon', 
+            'category': 'Private Sector Bank', 
+            'full_name': 'ICICI Bank',
+            'logo': '<div class="platform-logo" style="background: #F58220;">ICICI</div>'
+        }
     }
 
-    # Filter platforms based on search
-    if search:
-        search = search.lower()
-        filtered_platforms = {
-            name: details for name, details in all_platforms.items()
-            if search in name.lower() or search in details['category'].lower()
-        }
-        
-        if filtered_platforms:
-            st.markdown('<div class="category-header">🔍 Search Results</div>', unsafe_allow_html=True)
-            
-            # Display search results in grid
-            cols = st.columns(6)
-            for idx, (platform, details) in enumerate(filtered_platforms.items()):
-                with cols[idx % 6]:
-                    if st.button(
-                        f"{details['icon']}\n{platform}\n{details['status']}", 
-                        key=f"search_{platform}",
-                        use_container_width=True,
-                        disabled=details['status'] != 'Available'
-                    ):
-                        st.session_state.selected_platform = platform
-                        route_to_platform(platform, username)
-                        return
-        else:
-            st.info("No platforms found matching your search. Try a different term.")
-            
-    # If no search or showing all results
+    # Search box
+    search = st.text_input("🔍 Search your bank or payment platform")
+
+    # UPI Apps section header
+    st.markdown('<div class="section-header">🔄 UPI Payment Apps</div>', unsafe_allow_html=True)
+
     if not search:
-        # Group platforms by category
-        upi_platforms = {k: v for k, v in all_platforms.items() if v['category'] == 'UPI'}
-        public_banks = {k: v for k, v in all_platforms.items() if v['category'] == 'Public Sector Bank'}
-        private_banks = {k: v for k, v in all_platforms.items() if v['category'] == 'Private Sector Bank'}
-        small_finance_banks = {k: v for k, v in all_platforms.items() if v['category'] == 'Small Finance Bank'}
-        payment_banks = {k: v for k, v in all_platforms.items() if v['category'] == 'Payment Bank'}
+        # Show only UPI apps by default
+        upi_platforms = {name: details for name, details in all_platforms.items() 
+                        if details['category'] == 'UPI'}
+        
+        cols = st.columns(4)
+        for idx, (name, details) in enumerate(upi_platforms.items()):
+            with cols[idx % 4]:
+                st.markdown(f"""
+                    <div class="platform-card">
+                        {details['logo']}
+                        <div class="platform-name">{name}</div>
+                        <div class="platform-status {'status-available' if details['status'] == 'Available' else 'status-coming-soon'}">
+                            {details['status']}
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                if st.button(
+                    "Select",
+                    key=f"upi_{name.lower().replace(' ', '_')}",
+                    disabled=details['status'] != 'Available',
+                    use_container_width=True
+                ):
+                    st.session_state.selected_platform = name
+                    st.rerun()
 
-        # Display UPI Platforms
-        st.markdown('<div class="category-header">🔄 UPI Payment Apps</div>', unsafe_allow_html=True)
-        display_grid(upi_platforms)
+    if search:
+        # Show all platforms if search is "all"
+        if search.lower().strip() == "all":
+            # Display all categories
+            for category in ['UPI', 'Public Sector Bank', 'Private Sector Bank']:
+                category_platforms = {
+                    name: details for name, details in all_platforms.items()
+                    if details['category'] == category
+                }
+                
+                if category_platforms:
+                    icon = "🔄" if category == "UPI" else "🏦"
+                    st.markdown(f'<div class="section-header">{icon} {category}</div>', unsafe_allow_html=True)
+                    
+                    cols = st.columns(4)
+                    for idx, (name, details) in enumerate(category_platforms.items()):
+                        with cols[idx % 4]:
+                            display_name = details.get('full_name', name)
+                            st.markdown(f"""
+                                <div class="platform-card">
+                                    {details.get('logo', '')}
+                                    <div class="platform-name">{display_name}</div>
+                                    <div class="platform-status {'status-available' if details['status'] == 'Available' else 'status-coming-soon'}">
+                                        {details['status']}
+                                    </div>
+                                </div>
+                            """, unsafe_allow_html=True)
+                            
+                            if st.button(
+                                "Select",
+                                key=f"all_{name.lower().replace(' ', '_')}",
+                                disabled=details['status'] != 'Available',
+                                use_container_width=True
+                            ):
+                                st.session_state.selected_platform = name
+                                st.rerun()
+        else:
+            # Existing search functionality
+            search = search.lower()
+            filtered_platforms = {
+                name: details for name, details in all_platforms.items()
+                if (search in name.lower() or 
+                    search in details.get('full_name', '').lower() or 
+                    search in details['category'].lower())
+            }
+            
+            if filtered_platforms:
+                # Display filtered results
+                for category in ['UPI', 'Public Sector Bank', 'Private Sector Bank']:
+                    category_platforms = {
+                        name: details for name, details in filtered_platforms.items()
+                        if details['category'] == category
+                    }
+                    
+                    if category_platforms:
+                        icon = "🔄" if category == "UPI" else "🏦"
+                        st.markdown(f'<div class="section-header">{icon} {category}</div>', unsafe_allow_html=True)
+                        
+                        cols = st.columns(4)
+                        for idx, (name, details) in enumerate(category_platforms.items()):
+                            with cols[idx % 4]:
+                                display_name = details.get('full_name', name)
+                                st.markdown(f"""
+                                    <div class="platform-card">
+                                        {details.get('logo', '')}
+                                        <div class="platform-name">{display_name}</div>
+                                        <div class="platform-status {'status-available' if details['status'] == 'Available' else 'status-coming-soon'}">
+                                            {details['status']}
+                                        </div>
+                                    </div>
+                                """, unsafe_allow_html=True)
+                                
+                                if st.button(
+                                    "Select",
+                                    key=f"search_{name.lower().replace(' ', '_')}",
+                                    disabled=details['status'] != 'Available',
+                                    use_container_width=True
+                                ):
+                                    st.session_state.selected_platform = name
+                                    st.rerun()
+            else:
+                st.info("No platforms found matching your search. Try a different term.")
 
-        # Display Public Sector Banks
-        st.markdown('<div class="category-header">🏦 Public Sector Banks</div>', unsafe_allow_html=True)
-        display_grid(public_banks)
+    # Comment out the Recent Activity section properly
+    """
+    # Add Recent Activity section
+    st.markdown('<div class="recent-activity">', unsafe_allow_html=True)
+    st.markdown('<h2>Recent Activity</h2>', unsafe_allow_html=True)
 
-        # Display Private Sector Banks
-        st.markdown('<div class="category-header">🏛️ Private Sector Banks</div>', unsafe_allow_html=True)
-        display_grid(private_banks)
+    # Get recent activity from Supabase
+    supabase = get_client()
+    try:
+        response = supabase.table('transactions').select('*')\\
+            .eq('username', username)\\
+            .order('created_at', desc=True)\\
+            .limit(5)\\
+            .execute()
+        
+        recent_transactions = response.data
 
-        # Display Small Finance Banks
-        st.markdown('<div class="category-header">💰 Small Finance Banks</div>', unsafe_allow_html=True)
-        display_grid(small_finance_banks)
+        if recent_transactions:
+            # Display recent transactions
+            for transaction in recent_transactions:
+                st.markdown(
+                    f'''
+                    <div class="activity-item">
+                        <div class="activity-platform">{transaction['platform']}</div>
+                        <div class="activity-amount">₹{transaction['amount']}</div>
+                        <div class="activity-date">{transaction['created_at']}</div>
+                    </div>
+                    ''',
+                    unsafe_allow_html=True
+                )
+        else:
+            st.markdown(
+                '''
+                <div class="activity-alert">
+                    ⚠️ No recent activity to show
+                </div>
+                ''',
+                unsafe_allow_html=True
+            )
 
-        # Display Payment Banks
-        st.markdown('<div class="category-header">💳 Payment Banks</div>', unsafe_allow_html=True)
-        display_grid(payment_banks)
+    except Exception as e:
+        st.markdown(
+            '''
+            <div class="activity-alert">
+                ⚠️ No recent activity to show
+            </div>
+            ''',
+            unsafe_allow_html=True
+        )
 
-    # Add custom CSS for buttons
-    st.markdown("""
-        <style>
-        .stButton button {
-            background-color: #222222;
-            color: white;
-            border: 1px solid #333333;
-            padding: 1rem;
-            text-align: center;
-            transition: all 0.3s ease;
-            height: auto;
-            white-space: pre-wrap;
-        }
-        .stButton button:hover:not([disabled]) {
-            transform: translateY(-5px);
-            background-color: #333333;
-            border-color: white;
-        }
-        .stButton button[disabled] {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-        </style>
-    """, unsafe_allow_html=True) 
+    st.markdown('</div>', unsafe_allow_html=True)
+    """
+
+    # Route to platform if selected
+    if 'selected_platform' in st.session_state:
+        route_to_platform(st.session_state.selected_platform, username) 

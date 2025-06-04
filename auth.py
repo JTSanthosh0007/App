@@ -3,7 +3,7 @@ import sqlite3
 import hashlib
 from datetime import datetime
 from logo import show_app_logo
-from firebase_config import login_user, validate_email, send_password_reset_email
+from supabase_config import login_user, validate_email, send_password_reset_email
 
 def init_auth_db():
     """Initialize authentication database"""

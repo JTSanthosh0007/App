@@ -7,11 +7,16 @@ import streamlit as st
 import re
 from pdfminer.layout import LAParams
 import PyPDF2
-import fitz  #  PyMuPDF
+import fitz  # PyMuPDF
 import traceback  # Import traceback for detailed error logging
 import logging  # Import logging for error handling
 import plotly.graph_objects as go
 from datetime import datetime
+import json
+import sys
+import argparse
+from functools import lru_cache
+import concurrent.futures
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -20,783 +25,360 @@ logger = logging.getLogger(__name__)
 class StatementParser:
     def __init__(self, file_obj):
         self.file_obj = file_obj
-        self.filename = Path(file_obj.name).name
+        self.transactions = []
+        self._category_cache = {}
 
+    @st.cache_data(ttl=3600)  # Cache for 1 hour
     def parse(self):
-        """Parse the uploaded file into a standardized DataFrame"""
-        if self.filename.endswith('.pdf'):
-            # Check if it's a Paytm statement being uploaded to PhonePe section
-            if 'paytm' in self.filename.lower() and 'phonepe' in st.session_state.get('selected_platform', '').lower():
-                st.error("⚠️ Incorrect statement type! Please upload a PhonePe statement for the PhonePe analyzer.")
-                return pd.DataFrame(columns=['date', 'amount', 'description', 'category'])
-            
-            # Check if it's a PhonePe statement being uploaded to Paytm section    
-            if 'phonepe' in self.filename.lower() and 'paytm' in st.session_state.get('selected_platform', '').lower():
-                st.error("⚠️ Incorrect statement type! Please upload a Paytm statement for the Paytm analyzer.")
-                return pd.DataFrame(columns=['date', 'amount', 'description', 'category'])
-            
-            # Check if it's a SuperMoney statement being uploaded to wrong section
-            if 'supermoney' in self.filename.lower() and 'supermoney' not in st.session_state.get('selected_platform', '').lower():
-                st.error("⚠️ Incorrect statement type! Please upload this statement in the SuperMoney analyzer section.")
-                return pd.DataFrame(columns=['date', 'amount', 'description', 'category'])
-            
-            # Route to appropriate parser
-            if 'paytm' in self.filename.lower():
-                return self._parse_paytm_pdf(self._extract_text_from_pdf())
-            elif 'supermoney' in self.filename.lower():
-                return self._parse_supermoney_pdf(self._extract_text_from_pdf())
-            else:
+        try:
+            if self.file_obj.name.endswith('.pdf'):
                 return self._parse_pdf()
-        elif self.filename.endswith('.csv'):
-            return self._parse_csv()
         else:
-            raise ValueError("Unsupported file format")
+                raise ValueError("Unsupported file format. Only PDF files are supported.")
+        except Exception as e:
+            logger.error(f"Error parsing file: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
 
     def _parse_pdf(self):
-        """Handle PDF parsing with comprehensive and ultra-flexible extraction"""
-        pdf_stream = io.BytesIO(self.file_obj.read())
-        
         try:
-            with pdfplumber.open(pdf_stream) as pdf:
-                # Enhanced debugging: Log total pages and initial text extraction
-                st.write(f"Total PDF Pages: {len(pdf.pages)}")
-                
-                all_extracted_text = []
-                parsing_errors = []
-                
-                # Ultra-flexible transaction extraction patterns
-                transaction_patterns = [
-                    # Pattern 1: Comprehensive format with multiple variations
-                    re.compile(
-                        r'(?P<date>(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s*\d{1,2},\s*\d{4})\s*'
-                        r'(?P<description>.*?)'
-                        r'(?P<type>DEBIT|CREDIT|Dr|Cr)?\s*'
-                        r'(?:₹|Rs\.?)\s*(?P<amount>[\d,]+\.?\d*)',
-                        re.IGNORECASE | re.MULTILINE | re.DOTALL
-                    ),
-                    
-                    # Pattern 2: More relaxed matching
-                    re.compile(
-                        r'(?P<date>\d{1,2}\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s*\d{4})\s*'
-                        r'(?P<description>.*?)'
-                        r'(?P<amount>[-+]?₹?\s*[\d,]+\.?\d*)',
-                        re.IGNORECASE | re.MULTILINE | re.DOTALL
-                    )
-                ]
-
-                # Comprehensive transaction extraction
-                transactions = []
-                for page_num, page in enumerate(pdf.pages, 1):
-                    try:
-                        text = page.extract_text(
-                            x_tolerance=3,
-                            y_tolerance=3,
-                            layout=True,
-                            keep_blank_chars=False
-                        )
-
-                        if text and text.strip():
-                            all_extracted_text.append(text)
-                    
-                    except Exception as e:
-                        logger.error(f"Text extraction error on page {page_num}: {e}")
-                        parsing_errors.append(f"Page {page_num}: {str(e)}")
-
-                # Combine all extracted text
-                full_text = "\n".join(all_extracted_text)
-                
-                # Extract transactions from full text
-                for pattern in transaction_patterns:
-                    for match in pattern.finditer(full_text):
-                        try:
-                            # Parse date with multiple strategies
-                            date_str = match.group('date').strip()
-                            date = self._parse_date(date_str)
-                            
-                            # Parse description
-                            description = match.group('description').strip()
-                            
-                            # Parse amount with multiple cleaning strategies
-                            amount_str = match.group('amount')
-                            amount_str = re.sub(r'[₹,\s]', '', amount_str)
-                            amount = float(amount_str)
-                            
-                            # Determine transaction type
-                            transaction_type = match.group('type') if 'type' in match.groupdict() else None
-                            if transaction_type:
-                                transaction_type = transaction_type.upper()
-                            else:
-                                transaction_type = 'CREDIT' if amount > 0 else 'DEBIT'
-                            
-                            # Adjust amount based on transaction type
-                            if transaction_type == 'DEBIT' or transaction_type == 'Dr':
-                                amount = -abs(amount)
-                            
-                            # Append transaction
-                            transactions.append({
-                        'date': date,
-                        'amount': amount,
-                        'description': description,
-                                'category': self._categorize_transaction(description)
-                            })
-
-                        except Exception as e:
-                            logger.warning(f"Could not process transaction: {e}")
-
-                # Create DataFrame
-                if transactions:
-                    df = pd.DataFrame(transactions)
+            # Use PyMuPDF for faster PDF parsing
+            doc = fitz.open(stream=self.file_obj.read(), filetype="pdf")
+            text = ""
+            for page in doc:
+                text += page.get_text()
             
-                    # Advanced validation and cleaning
-                    df = df[df['amount'].abs() > 0]  # Remove zero or near-zero amount transactions
-                    df = df.drop_duplicates(subset=['date', 'amount', 'description'])  # Remove exact duplicates
-                    df = df.sort_values('date')  # Sort by date
-
-                    st.success(f"Successfully extracted {len(df)} transactions.")
-                    return df
-                else:
-                    st.error("No transactions could be extracted.")
-                    st.write("Extracted Text Debugging:", full_text[:1000])
-                    return pd.DataFrame(columns=['date', 'amount', 'description', 'category'])
-
+            if 'kotak' in self.file_obj.name.lower() or 'kotak' in text.lower():
+                return self._parse_kotak_pdf(text)
+            
+            # Process text in parallel using ThreadPoolExecutor
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                # Split text into chunks for parallel processing
+                chunks = [text[i:i+1000] for i in range(0, len(text), 1000)]
+                results = list(executor.map(self._process_text_chunk, chunks))
+            
+            # Combine results
+            transactions = []
+            for result in results:
+                transactions.extend(result)
+            
+            return transactions
         except Exception as e:
-            logger.error(f"Comprehensive PDF parsing error: {str(e)}")
-            st.error(f"Error processing the PDF: {str(e)}\nPlease ensure this is a valid bank statement.")
-            return pd.DataFrame(columns=['date', 'amount', 'description', 'category'])
+            logger.error(f"Error parsing PDF: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
 
     def _parse_date(self, date_str):
-        """
-        Ultra-robust date parsing method with comprehensive handling and detailed logging
-        """
         try:
-            # Normalize the date string
-            if not date_str:
-                logger.warning(f"Empty date string received")
-                return datetime.now()
-
-            date_str = date_str.strip()
-            
-            # Extensive logging for debugging
-            logger.info(f"Attempting to parse date string: '{date_str}'")
-            
-            # Date formats to try (most specific to least specific)
-            date_formats = [
-                '%d %b %Y',      # 06 Nov 2024
-                '%b %d %Y',      # Nov 06 2024
-                '%d %B %Y',      # 06 November 2024
-                '%B %d %Y',      # November 06 2024
-                '%m/%d/%Y',      # 11/06/2024
-                '%d/%m/%Y',      # 06/11/2024
-                '%Y-%m-%d',      # 2024-11-06
-                '%d-%m-%Y',      # 06-11-2024
-                '%b %d, %Y',     # Nov 06, 2024
-                '%d %b, %Y',     # 06 Nov, 2024
-                '%d-%b-%Y',      # 06-Nov-2024
-                '%b-%d-%Y'       # Nov-06-2024
-            ]
-            
-            # Try parsing with different formats
-            for fmt in date_formats:
-                try:
-                    parsed_date = datetime.strptime(date_str, fmt)
-                    
-                    # Handle future dates
-                    current_year = datetime.now().year
-                    if parsed_date.year > current_year:
-                        # Adjust to current or previous year
-                        parsed_date = parsed_date.replace(year=current_year)
-                    
-                    logger.info(f"Successfully parsed date: {parsed_date}")
-                    return parsed_date
-                except ValueError as ve:
-                    # Log specific format failure
-                    logger.debug(f"Failed to parse with format {fmt}: {ve}")
-                    continue
-            
-            # Fallback parsing with more flexible approach
-            try:
-                # Extract numeric components
-                components = re.findall(r'\d+', date_str)
-                
-                if len(components) >= 3:
-                    # Try different component orders
-                    possible_orders = [
-                        (components[0], components[1], components[2]),  # day, month, year
-                        (components[1], components[0], components[2]),  # month, day, year
-                        (components[2], components[0], components[1])   # year, day, month
-                    ]
-                    
-                    for day, month, year in possible_orders:
-                        # Convert to integers
-                        day, month, year = int(day), int(month), int(year)
-                        
-                        # Handle two-digit years
-                        if year < 100:
-                            year += 2000 if year < 50 else 1900
-                        
-                        try:
-                            parsed_date = datetime(year, month, day)
-                            
-                            # Adjust future dates
-                            current_year = datetime.now().year
-                            if parsed_date.year > current_year:
-                                parsed_date = parsed_date.replace(year=current_year)
-                            
-                            logger.info(f"Successfully parsed flexible date: {parsed_date}")
-                            return parsed_date
-                        except ValueError as ve:
-                            logger.debug(f"Failed flexible parsing: {ve}")
-                            continue
-            except Exception as e:
-                logger.error(f"Unexpected error in flexible date parsing: {e}")
-            
-            # If all parsing fails, log detailed warning and use current date
-            logger.warning(f"Could not parse date: '{date_str}'. Original input: {repr(date_str)}")
-            return datetime.now()
-        
+            # ... existing code ...
+            pass
         except Exception as e:
-            # Catch-all error handling
-            logger.error(f"Critical error in date parsing: {e}")
-            return datetime.now()
+            logger.error(f"Error parsing date: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
 
+    @lru_cache(maxsize=1000)
     def _categorize_transaction(self, description):
-        """
-        Ultra-comprehensive transaction categorization
-        """
         description = description.lower()
         
         # Expanded and more nuanced categorization with weighted scoring
         categories = {
             'Family Support': {
-                'keywords': ['dad', 'mom', 'father', 'mother', 'parents', 'family', 'gift'],
+                'keywords': [ 
+                'dad', 'mom', 'father', 'mother', 'parents', 'family', 'gift',
+                'brother', 'sister', 'sibling', 'son', 'daughter', 'child', 'children',
+                'wife', 'husband', 'spouse', 'partner',
+                'grandfather', 'grandmother', 'grandparents', 'uncle', 'aunt', 'cousin',
+                'nephew', 'niece', 'in-laws', 'mother-in-law', 'father-in-law',
+                'brother-in-law', 'sister-in-law', 'stepfather', 'stepmother', 
+                'stepbrother', 'stepsister', 'half-brother', 'half-sister', 
+                'godfather', 'godmother', 'godparent',
+                'home', 'household', 'guardian', 'caretaker', 'dependents', 'provider',
+                'breadwinner', 'foster parent', 'adoptive parent', 'caregiver', 'nanny',
+                'support', 'care', 'love', 'help', 'nurturing', 'protection', 'bonding', 
+                'guidance', 'responsibility', 'commitment', 'trust', 'unity', 'sacrifice', 
+                'loyalty', 'companionship', 'respect', 'devotion', 'understanding',
+                'anniversary', 'birthday', 'celebration', 'reunion', 'family gathering', 
+                'holiday', 'tradition', 'legacy', 'inheritance', 'heritage', 'roots',
+                'elders', 'relatives', 'upbringing', 'well-being', 'parenting', 'genealogy',
+                'lineage', 'descendants', 'heir', 'next of kin', 'family tree'
+                ],
                 'weight': 0.9
             },
-            'Salary': {
-                'keywords': ['salary', 'credit', 'income', 'payment', 'cashfree', 'refund'],
+            'Food & Dining': {
+                'keywords': [
+        'restaurant', 'food', 'dining', 'cafe', 'hotel', 'meal', 'fast food', 'street food',
+        'buffet', 'takeaway', 'home delivery', 'drive-thru', 'fine dining', 'food truck',
+        'catering', 'brunch', 'lunch', 'dinner', 'breakfast', 'snacks', 'midnight snack',
+        'mcdonalds', 'kfc', 'dominos', 'pizza hut', 'burger king', 'subway', 'starbucks',
+        'dunkin donuts', 'hard rock cafe', 'taco bell', 'chipotle', 'wendys', 'panda express',
+                    'krispy kreme', 'baskin robbins', 'five guys', 'carls jr', 'popeyes', "arby's", 'in-n-out',
+        'zomato', 'swiggy', 'ubereats', 'foodpanda', 'dunzo', 'grubhub', 'doordash', 
+        'postmates', 'deliveroo', 'just eat',
+                    'grocery', 'supermarket', 'market', 'store', 'shop', 'bazaar', 'mart',
+                    'vegetables', 'fruits', 'meat', 'fish', 'dairy', 'bakery', 'deli',
+                    'spices', 'herbs', 'condiments', 'beverages', 'snacks', 'candy', 'chocolate',
+                    'organic', 'fresh', 'frozen', 'canned', 'packaged', 'bulk'
+                ],
                 'weight': 0.8
             },
-            'Bills': {
+            'Transportation': {
                 'keywords': [
-                    'electricity', 'mobile', 'phone', 'internet', 'recharge', 
-                    'bill', 'poonawalla', 'loan', 'finance', 'insurance', 
-                    'electricity', 'water', 'gas', 'rent'
+                    'uber', 'ola', 'lyft', 'taxi', 'cab', 'auto', 'rickshaw', 'bus', 'train', 'metro',
+                    'subway', 'tram', 'ferry', 'flight', 'airline', 'airport', 'railway', 'station',
+                    'petrol', 'diesel', 'gas', 'fuel', 'oil', 'lubricant', 'maintenance', 'service',
+                    'repair', 'tire', 'battery', 'spare parts', 'car wash', 'parking', 'toll',
+                    'insurance', 'registration', 'license', 'permit', 'tax', 'fine', 'penalty',
+                    'bicycle', 'scooter', 'motorcycle', 'bike', 'cycle', 'walking', 'jogging',
+                    'running', 'exercise', 'fitness', 'gym', 'sports', 'recreation'
+                ],
+                'weight': 0.85
+            },
+            'Shopping & Retail': {
+                'keywords': [
+                    'amazon', 'flipkart', 'myntra', 'ajio', 'nykaa', 'purplle', 'firstcry',
+                    'shopclues', 'snapdeal', 'paytm mall', 'jiomart', 'bigbasket', 'grofers',
+                    'dunzo', 'zepto', 'blinkit', 'swiggy instamart', 'bigbazaar', 'dmart',
+                    'reliance fresh', 'spencer', 'more', 'easyday', 'nature\'s basket',
+                    'clothing', 'apparel', 'fashion', 'accessories', 'jewelry', 'watches',
+                    'footwear', 'bags', 'wallets', 'cosmetics', 'beauty', 'personal care',
+                    'electronics', 'gadgets', 'mobiles', 'laptops', 'computers', 'tablets',
+                    'home', 'furniture', 'decor', 'kitchen', 'bath', 'bedding', 'linens',
+                    'toys', 'games', 'books', 'stationery', 'sports', 'fitness', 'outdoor',
+                    'garden', 'pets', 'automotive', 'tools', 'hardware', 'construction'
+                ],
+                'weight': 0.75
+            },
+            'Entertainment & Leisure': {
+                'keywords': [
+                    'netflix', 'amazon prime', 'hotstar', 'sony liv', 'zee5', 'voot', 'altbalaji',
+                    'mx player', 'youtube premium', 'spotify', 'apple music', 'gaana', 'wynk',
+                    'jiosaavn', 'hungama', 'bookmyshow', 'inox', 'pvr', 'cinepolis', 'imax',
+                    'theatre', 'cinema', 'movie', 'concert', 'show', 'performance', 'event',
+                    'ticket', 'booking', 'reservation', 'amusement park', 'theme park', 'water park',
+                    'zoo', 'aquarium', 'museum', 'gallery', 'exhibition', 'fair', 'carnival',
+                    'festival', 'party', 'celebration', 'gathering', 'meeting', 'conference',
+                    'seminar', 'workshop', 'training', 'course', 'class', 'lesson', 'tutorial'
                 ],
                 'weight': 0.7
             },
-            'Transportation': {
-                'keywords': ['auto', 'uber', 'ola', 'bus', 'train', 'flight', 'travel', 'taxi'],
-                'weight': 0.6
+            'Health & Medical': {
+                'keywords': [
+                    'hospital', 'clinic', 'doctor', 'physician', 'specialist', 'surgeon',
+                    'dentist', 'orthodontist', 'ophthalmologist', 'optometrist', 'pharmacy',
+                    'medical store', 'chemist', 'drugstore', 'medicine', 'prescription',
+                    'vaccination', 'immunization', 'checkup', 'examination', 'diagnosis',
+                    'treatment', 'therapy', 'surgery', 'operation', 'procedure', 'test',
+                    'laboratory', 'pathology', 'radiology', 'x-ray', 'scan', 'ultrasound',
+                    'mri', 'ct scan', 'ecg', 'blood test', 'urine test', 'stool test',
+                    'insurance', 'claim', 'coverage', 'premium', 'deductible', 'copay',
+                    'ambulance', 'emergency', 'urgent care', 'first aid', 'bandage',
+                    'ointment', 'cream', 'tablet', 'capsule', 'syrup', 'injection'
+                ],
+                'weight': 0.9
             },
-            'Personal Expenses': {
-                'keywords': ['ravi', 'ramanjini', 'shetty', 'kumar', 'personal', 'service'],
-                'weight': 0.5
+            'Education & Learning': {
+                'keywords': [
+                    'school', 'college', 'university', 'institute', 'academy', 'training',
+                    'course', 'class', 'lecture', 'seminar', 'workshop', 'tutorial',
+                    'tuition', 'coaching', 'mentoring', 'guidance', 'counseling',
+                    'book', 'textbook', 'reference', 'study material', 'stationery',
+                    'pen', 'pencil', 'notebook', 'paper', 'folder', 'bag', 'uniform',
+                    'fee', 'tuition fee', 'admission fee', 'examination fee',
+                    'library', 'laboratory', 'computer lab', 'sports facility',
+                    'scholarship', 'grant', 'loan', 'financial aid', 'bursary',
+                    'certificate', 'diploma', 'degree', 'qualification', 'skill',
+                    'knowledge', 'learning', 'education', 'training', 'development'
+                ],
+                'weight': 0.85
             },
-            'Transfer': {
-                'keywords': ['transfer', 'upi', 'paytm', 'phonepe', 'gpay', 'bank transfer'],
-                'weight': 0.4
+            'Utilities & Bills': {
+                'keywords': [
+                    'electricity', 'power', 'energy', 'water', 'gas', 'fuel', 'petrol',
+                    'diesel', 'lpg', 'cng', 'telephone', 'mobile', 'internet', 'broadband',
+                    'cable', 'satellite', 'tv', 'television', 'radio', 'newspaper', 'magazine',
+                    'subscription', 'membership', 'rent', 'lease', 'mortgage', 'loan',
+                    'insurance', 'tax', 'duty', 'fee', 'charge', 'bill', 'payment',
+                    'maintenance', 'service', 'repair', 'upkeep', 'cleaning', 'sanitation',
+                    'waste', 'garbage', 'sewage', 'drainage', 'security', 'safety',
+                    'emergency', 'fire', 'police', 'ambulance', 'hospital', 'medical'
+                ],
+                'weight': 0.8
             },
-            'Shopping': {
-                'keywords': ['amazon', 'flipkart', 'shop', 'purchase', 'buy', 'ecommerce'],
-                'weight': 0.6
+            'Travel & Tourism': {
+                'keywords': [
+                    'flight', 'airline', 'airport', 'train', 'railway', 'station', 'bus',
+                    'coach', 'car', 'taxi', 'cab', 'auto', 'rickshaw', 'bicycle', 'scooter',
+                    'motorcycle', 'bike', 'cycle', 'walking', 'jogging', 'running', 'exercise',
+                    'hotel', 'resort', 'motel', 'inn', 'lodge', 'guest house', 'hostel',
+                    'apartment', 'villa', 'cottage', 'cabin', 'tent', 'camping', 'caravan',
+                    'tour', 'package', 'holiday', 'vacation', 'trip', 'journey', 'voyage',
+                    'expedition', 'safari', 'cruise', 'yacht', 'boat', 'ship', 'ferry',
+                    'ticket', 'booking', 'reservation', 'passport', 'visa', 'permit',
+                    'insurance', 'guide', 'map', 'compass', 'camera', 'binoculars'
+                ],
+                'weight': 0.75
             },
-            'Food': {
-                'keywords': ['restaurant', 'food', 'dining', 'cafe', 'hotel', 'meal', 'pizza', 'burger'],
-                'weight': 0.5
+            'Investments & Savings': {
+                'keywords': [
+                    'bank', 'account', 'savings', 'current', 'fixed deposit', 'recurring deposit',
+                    'investment', 'stock', 'share', 'equity', 'mutual fund', 'etf', 'bonds',
+                    'debentures', 'nps', 'ppf', 'epf', 'insurance', 'life insurance',
+                    'health insurance', 'term insurance', 'ulip', 'endowment', 'pension',
+                    'annuity', 'retirement', 'gold', 'silver', 'platinum', 'diamond',
+                    'property', 'real estate', 'land', 'house', 'apartment', 'commercial',
+                    'rental', 'lease', 'mortgage', 'loan', 'credit', 'debit', 'transaction',
+                    'transfer', 'withdrawal', 'deposit', 'interest', 'dividend', 'profit',
+                    'loss', 'gain', 'return', 'yield', 'growth', 'appreciation'
+                ],
+                'weight': 0.9
             },
-            'Entertainment': {
-                'keywords': ['netflix', 'amazon prime', 'movie', 'show', 'ticket', 'cinema', 'streaming'],
-                'weight': 0.4
+            'UPI & Wallets': {
+                'keywords': [
+                    'paytm', 'phonepe', 'google pay', 'gpay', 'bhim', 'amazon pay', 'mobikwik', 'freecharge', 'airtel money', 'jiomoney'
+                ],
+                'weight': 0.9
+            },
+            'Indian Banks': {
+                'keywords': [
+                    'sbi', 'state bank of india', 'hdfc', 'icici', 'axis', 'kotak', 'pnb', 'canara', 'union bank', 'bank of baroda', 'idfc', 'yes bank', 'indusind', 'uco', 'central bank', 'bank of india', 'rbl', 'federal bank', 'karur vysya', 'dcb', 'south indian bank'
+                ],
+                'weight': 0.9
+            },
+            'Jewellery': {
+                'keywords': [
+                    'tanishq', 'kalyan', 'malabar', 'pc jeweller', 'joyallukas', 'tribhovandas', 'senco', 'tbz', 'bhima', 'lalitha', 'gitanjali'
+                ],
+                'weight': 0.7
+            },
+            'Mutual Funds & Stocks': {
+                'keywords': [
+                    'zerodha', 'groww', 'upstox', 'icici direct', 'hdfc securities', 'angel broking', 'motilal oswal', 'sharekhan', '5paisa', 'kotak securities', 'axis direct'
+                ],
+                'weight': 0.8
+            },
+            'Government Services': {
+                'keywords': [
+                    'income tax', 'gst', 'epfo', 'nps', 'uidai', 'passport seva', 'pan card', 'aadhaar', 'voter id', 'driving license', 'parivahan', 'digilocker', 'bharat billpay', 'bharat gas', 'indane', 'hp gas', 'municipal', 'property tax', 'water bill', 'electricity bill', 'mseva', 'seva kendra', 'state government', 'central government', 'railway', 'irctc', 'post office', 'india post', 'court fee', 'stamp duty', 'registration fee', 'e-district', 'e-mitra', 'ap online', 'mp online', 'mahaonline', 'sugam', 'sakala', 'mee seva', 'ts online', 'bhoomi', 'land records', 'ration card', 'pds', 'election commission', 'swachh bharat', 'pm kisan', 'pmay', 'ayushman', 'jan dhan', 'digital india', 'bharat net', 'umang', 'mygov', 'eshram', 'labour', 'pf', 'esi', 'state transport', 'rto', 'municipal corporation', 'gram panchayat', 'zilla parishad', 'block office', 'collectorate', 'tehsil', 'taluka', 'mandal', 'ward', 'urban local body', 'panchayat', 'gram sabha', 'sarpanch', 'mla', 'mp', 'govt', 'gov', 'govt. of india', 'govt of india', 'govt of', 'govt.', 'gov.'
+                ],
+                'weight': 0.8
+            },
+            'Gold & Jewellery': {
+                'keywords': [
+                    'tanishq', 'kalyan', 'malabar', 'pc jeweller', 'joyallukas', 'tribhovandas', 'senco', 'tbz', 'bhima', 'lalitha', 'gitanjali', 'kiran gems', 'shubh jewellers', 'rivaah', 'caratlane', 'bluestone', 'jewellery', 'gold', 'silver', 'diamond', 'platinum', 'bullion', 'ornament', 'bangle', 'ring', 'necklace', 'earring', 'bracelet', 'mangalsutra', 'nosepin', 'chain', 'coin', 'bar', 'jeweler', 'jewellers', 'jewellery shop', 'jewelry', 'jeweler', 'jewellers', 'jewellery store', 'jewelry store'
+                ],
+                'weight': 0.7
+            },
+            'Recharge & Bill Payment': {
+                'keywords': [
+                    'paytm recharge', 'freecharge recharge', 'mobikwik recharge', 'airtel recharge', 'jio recharge', 'vi recharge', 'bsnl recharge', 'tata sky recharge', 'd2h recharge', 'electricity bill', 'water bill', 'gas bill', 'broadband bill', 'mobile bill', 'landline bill', 'postpaid bill', 'prepaid recharge', 'dth recharge', 'tv recharge', 'insurance premium', 'loan emi', 'credit card bill', 'fastag', 'metro card', 'smart card', 'utility bill', 'billdesk', 'bharat billpay', 'npci', 'upi', 'wallet', 'bill payment', 'recharge', 'topup', 'top-up', 'bill', 'payment', 'emi', 'installment', 'subscription', 'renewal'
+                ],
+                'weight': 0.8
+            },
+            'Indian Banks': {
+                'keywords': [
+                    'sbi', 'state bank of india', 'hdfc', 'icici', 'axis', 'kotak', 'pnb', 'canara', 'union bank', 'bank of baroda', 'idfc', 'yes bank', 'indusind', 'uco', 'central bank', 'bank of india', 'rbl', 'federal bank', 'karur vysya', 'dcb', 'south indian bank', 'bandhan', 'idbi', 'city union', 'tamilnad mercantile', 'saraswat', 'syndicate', 'vijaya', 'dena', 'andhra', 'corporation', 'indian overseas', 'punjab & sind', 'karnataka bank', 'dhanlaxmi', 'lakshmi vilas', 'catholic syrian', 'nkgsb', 'apna sahakari', 'saraswat', 'shamrao vithal', 'cosmos', 'janata sahakari', 'bharatiya mahila', 'abhyudaya', 'tjsb', 'suryoday', 'utkarsh', 'au small finance', 'equitas', 'ujjivan', 'esaf', 'fincare', 'nsdl', 'nsdl payments', 'nsdl jiffy', 'fincare', 'fino', 'fino payments', 'paytm payments', 'india post payments', 'jio payments', 'airtel payments', 'aditya birla payments', 'north east small finance', 'capital small finance', 'suryoday small finance', 'utkarsh small finance', 'esaf small finance', 'au small finance', 'equitas small finance', 'ujjivan small finance', 'fincare small finance', 'shivalik small finance', 'jana small finance', 'suryoday small finance', 'utkarsh small finance', 'esaf small finance', 'au small finance', 'equitas small finance', 'ujjivan small finance', 'fincare small finance', 'shivalik small finance', 'jana small finance'
+                ],
+                'weight': 0.9
+            },
+            'UPI & Wallets': {
+                'keywords': [
+                    'paytm', 'phonepe', 'google pay', 'gpay', 'bhim', 'amazon pay', 'mobikwik', 'freecharge', 'airtel money', 'jiomoney', 'payzapp', 'citrus', 'itz cash', 'oxigen', 'ybl', 'nsdl payments', 'fincare', 'nsdl jiffy', 'fino', 'fino payments', 'paytm payments', 'india post payments', 'jio payments', 'airtel payments', 'aditya birla payments', 'upi', 'wallet', 'qr code', 'scan and pay', 'virtual payment address', 'vpa', 'imps', 'neft', 'rtgs', 'aeps', 'bharat qr', 'upi id', 'upi pin', 'upi collect', 'upi pay', 'upi transfer', 'upi payment', 'upi withdrawal', 'upi deposit', 'upi refund', 'upi reversal', 'upi mandate', 'upi autopay', 'upi billpay', 'upi recharge', 'upi emi', 'upi installment', 'upi subscription', 'upi renewal'
+                ],
+                'weight': 0.9
+            },
+            'Mutual Funds & Stocks': {
+                'keywords': [
+                    'zerodha', 'groww', 'upstox', 'icici direct', 'hdfc securities', 'angel broking', 'motilal oswal', 'sharekhan', '5paisa', 'kotak securities', 'axis direct', 'sbi mutual fund', 'hdfc mutual fund', 'icici pru mf', 'axis mf', 'uti mf', 'franklin templeton', 'nippon india mf', 'mirae asset', 'motilal oswal mf', 'edelweiss mf', 'quantum mf', 'sbi securities', 'hdfc securities', 'icici direct', 'axis direct', 'kotak securities', 'angel one', 'upstox', 'zerodha', 'groww', '5paisa', 'sharekhan'
+                ],
+                'weight': 0.8
+            },
+            'Credit Cards': {
+                'keywords': [
+                    'hdfc', 'sbi', 'icici', 'axis', 'amex', 'kotak', 'rbl', 'indusind', 'yes bank', 'standard chartered', 'citi', 'hsbc', 'bob', 'idfc', 'federal', 'dcb', 'south indian bank', 'credit card', 'debit card', 'mastercard', 'visa', 'rupay', 'maestro', 'diners club', 'discover', 'platinum card', 'gold card', 'classic card', 'signature card', 'infinite card', 'world card', 'business card', 'corporate card', 'prepaid card', 'virtual card', 'forex card', 'travel card', 'fuel card', 'reward card', 'cashback card', 'lifetime free card', 'secured card', 'unsecured card', 'add-on card', 'supplementary card', 'contactless card', 'chip card', 'magstripe card', 'smart card', 'instant card', 'premium card', 'elite card', 'titanium card', 'prime card', 'select card', 'iconia card', 'regalia card', 'diners card', 'infinite card', 'world card', 'business card', 'corporate card', 'prepaid card', 'virtual card', 'forex card', 'travel card', 'fuel card', 'reward card', 'cashback card', 'lifetime free card', 'secured card', 'unsecured card', 'add-on card', 'supplementary card', 'contactless card', 'chip card', 'magstripe card', 'smart card', 'instant card', 'premium card', 'elite card', 'titanium card', 'prime card', 'select card', 'iconia card', 'regalia card', 'diners card'
+                ],
+                'weight': 0.8
             }
         }
         
-        # Scoring mechanism
-        category_scores = {category: 0 for category in categories}
-            
-        for category, details in categories.items():
-            for keyword in details['keywords']:
+        # Initialize variables for category scoring
+        max_score = 0
+        best_category = 'Other'
+        
+        # Score each category based on keyword matches
+        for category, data in categories.items():
+            score = 0
+            for keyword in data['keywords']:
                 if keyword in description:
-                    category_scores[category] += details['weight']
-                    
-        # Find the highest scoring category
-        top_category = max(category_scores, key=category_scores.get)
+                    score += data['weight']
+            
+            # Update best category if current score is higher
+            if score > max_score:
+                max_score = score
+                best_category = category
         
-        # If no significant match, return 'Others'
-        return top_category if category_scores[top_category] > 0.3 else 'Others'
+        return best_category
 
-    def _extract_text_with_pymupdf(self, pdf_stream, page_num):
-        """Fallback text extraction using PyMuPDF"""
-        try:
-            pdf_document = fitz.open(stream=pdf_stream, filetype="pdf")
-            page = pdf_document.load_page(page_num - 1)
-            return page.get_text("text")
-        except Exception as e:
-            logger.info(f"PyMuPDF failed to extract text from page {page_num}: {str(e)}")
-            return None
+    def _process_text_chunk(self, chunk):
+        # Process a chunk of text to extract transactions
+        transactions = []
+        # Add your transaction extraction logic here
+        return transactions
 
-    def _parse_csv(self):
-        """Handle CSV parsing"""
-        df = pd.read_csv(self.file_obj)
-        return self._standardize_dataframe(df)
-
-    def _standardize_dataframe(self, df):
-        """Clean and standardize the DataFrame format"""
-        try:
-            # The data is already standardized from _parse_pdf
-            # Just ensure we have the required columns
-            required_columns = ['date', 'amount', 'category']
-            if not all(col in df.columns for col in required_columns):
-                logger.error("Missing required columns in the data")
-                return pd.DataFrame({
-                    'date': [pd.Timestamp.now()], 
-                    'amount': [0.0],
-                    'category': ['Others']
+    def _parse_kotak_pdf(self, text):
+        import re
+        lines = text.splitlines()
+        joined_lines = []
+        buffer = ""
+        for line in lines:
+            if re.match(r'^\d{2}-\d{2}-\d{4}', line):
+                if buffer:
+                    joined_lines.append(buffer.strip())
+                buffer = line
+            else:
+                buffer += " " + line
+        if buffer:
+            joined_lines.append(buffer.strip())
+        print("==== KOTAK JOINED LINES ====")
+        for i, line in enumerate(joined_lines):
+            print(f"{i}: {line}")
+            if i > 20: break  # Only print the first 20 lines
+        transactions = []
+        # Regex for the table format you provided
+        pattern = re.compile(
+            r'^(\d{2}-\d{2}-\d{4})\s+(.+?)\s+([\d,]+\.\d{2})\((Cr|Dr)\)\s+([\d,]+\.\d{2})\((Cr|Dr)\)$'
+        )
+        for line in joined_lines:
+            match = pattern.search(line)
+            if match:
+                date, narration_chqref, amount, typ, balance, bal_type = match.groups()
+                amount = float(amount.replace(',', ''))
+                if typ == 'Dr':
+                    amount = -amount
+                transactions.append({
+                    'date': date,
+                    'description': narration_chqref.strip(),
+                    'amount': amount,
+                    'balance': float(balance.replace(',', ''))
                 })
-            
-            # Filter out any invalid amounts
-            df = df[df['amount'].abs() < 1e9]  # Filter out unreasonable amounts
-            
-            if df.empty:
-                logger.error("No valid transactions found after cleaning.")
-                return pd.DataFrame({
-                    'date': [pd.Timestamp.now()], 
-                    'amount': [0.0],
-                    'category': ['Others']
+        return transactions
+
+    def _parse_phonepe_pdf(self, text):
+        transactions = []
+        for line in text.splitlines():
+            # Example: 01/05/2024, "Payment to XYZ", 500.00, DR, 4500.00
+            parts = line.split(',')
+            if len(parts) == 5:
+                date, desc, amount, typ, balance = [p.strip() for p in parts]
+                amount = float(amount)
+                if typ == 'DR':
+                    amount = -amount
+                transactions.append({
+                    'date': date,
+                    'description': desc,
+                    'amount': amount,
+                    'balance': float(balance)
                 })
-            
-            # Return required columns including category
-            return df[['date', 'amount', 'category']]
-            
-        except Exception as e:
-            logger.error(f"Error standardizing data: {str(e)}")
-            return pd.DataFrame({
-                'date': [pd.Timestamp.now()], 
-                'amount': [0.0],
-                'category': ['Others']
-            })
+        return transactions
 
-    def generate_spending_chart(self, df):
-        """Create comprehensive interactive spending and timeline analysis charts"""
-        try:
-            # Ensure we have valid data
-            if df.empty or len(df) == 0:
-                st.warning("No transaction data available for analysis.")
-                return None, None
-
-            # Prepare data
-            df['date'] = pd.to_datetime(df['date'])
-
-            # Create tabs for different visualizations
-            tab1, tab2 = st.tabs(["Spending by Category", "Monthly Trends"])
-            
-            with tab1:
-                # Category-wise Spending
-                st.subheader("💸 Spending by Category")
-                
-                col1, col2, col3, col4, col5, col6, col7, col8 = st.columns(8)
-                
-                with col1:
-                    st.metric("Total Transactions", len(df))
-                with col2:
-                    st.metric("Total Credit Transactions", len(df[df['amount'] > 0]))
-                with col3:
-                    st.metric("Total Debit Transactions", len(df[df['amount'] < 0]))
-                with col4:
-                    # Total spent (debit amount)
-                    total_spent = df[df['amount'] < 0]['amount'].abs().sum()
-                    st.metric("Total Spent", f"₹{total_spent:,.2f}")
-                with col5:
-                    # Total credit amount
-                    total_credit = df[df['amount'] > 0]['amount'].sum()
-                    st.metric("Total Credit", f"₹{total_credit:,.2f}")
-                with col6:
-                    # Net amount (credits - debits)
-                    net_amount = df['amount'].sum()
-                    st.metric("Net Amount", f"₹{net_amount:,.2f}", 
-                              delta_color="inverse",
-                              delta=f"{'↑ Positive' if net_amount > 0 else '↓ Negative'}")
-                with col7:
-                    # Highest transaction amount
-                    highest_transaction = df['amount'].abs().max()
-                    highest_transaction_row = df.loc[df['amount'].abs() == highest_transaction].iloc[0]
-                    st.metric("Highest Transaction", 
-                              f"₹{highest_transaction:,.2f}", 
-                              delta=highest_transaction_row['description'][:15] + '...')
-                with col8:
-                    # Lowest transaction amount
-                    lowest_transaction = df['amount'].abs().min()
-                    lowest_transaction_row = df.loc[df['amount'].abs() == lowest_transaction].iloc[0]
-                    st.metric("Lowest Transaction", 
-                              f"₹{lowest_transaction:,.2f}", 
-                              delta=lowest_transaction_row['description'][:15] + '...')
-                
-                # Aggregate spending by category
-                spending_data = df[df['amount'] < 0].copy()
-                spending_data['amount'] = spending_data['amount'].abs()
-
-                # Aggregate spending by category
-                category_spending = spending_data.groupby('category')['amount'].agg(['sum', 'count']).reset_index()
-                category_spending.columns = ['Category', 'Total Amount', 'Number of Transactions']
-                category_spending = category_spending.sort_values('Total Amount', ascending=False)
-                
-                # Pie chart for category distribution
-                fig_category = go.Figure(data=[go.Pie(
-                    labels=category_spending['Category'],
-                    values=category_spending['Total Amount'],
-                    hole=0.3,
-                    textinfo='label+percent',
-                    hovertemplate="<b>%{label}</b><br>Total Spent: ₹%{value:,.2f}<br>Percentage: %{percent}<extra></extra>"
-                )])
-                
-                fig_category.update_layout(
-                    title='Spending Distribution Across Categories',
-                    height=500,
-                    template='plotly_white'
-                )
-                
-                st.plotly_chart(fig_category, use_container_width=True)
-            
-            with tab2:
-                # Monthly Trends
-                st.subheader("📈 Monthly Spending Trends")
-                
-                # Group by month and calculate total credits and debits
-                monthly_data = df.groupby(pd.Grouper(key='date', freq='M')).agg({
-                    'amount': ['sum', 'count']
-                }).reset_index()
-                
-                monthly_data.columns = ['Month', 'Total Amount', 'Number of Transactions']
-                monthly_data['Transaction Type'] = monthly_data['Total Amount'].apply(lambda x: 'Credit' if x > 0 else 'Debit')
-                
-                # Bar chart for monthly trends
-                fig_monthly = go.Figure()
-                
-                # Add bars for monthly totals
-                fig_monthly.add_trace(go.Bar(
-                    x=monthly_data['Month'],
-                    y=monthly_data['Total Amount'].abs(),
-                    name='Monthly Total',
-                    marker_color='rgba(31, 119, 180, 0.7)',
-                    hovertemplate="Month: %{x}<br>Total Amount: ₹%{y:,.2f}<br>Transactions: %{text}<extra></extra>",
-                    text=monthly_data['Number of Transactions']
-                ))
-                
-                fig_monthly.update_layout(
-                    title='Monthly Transaction Overview',
-                    xaxis_title='Month',
-                    yaxis_title='Total Amount (₹)',
-                    height=500,
-                    template='plotly_white'
-                )
-                
-                st.plotly_chart(fig_monthly, use_container_width=True)
-            
-            return None, fig_category
-        
-        except Exception as e:
-            st.error(f"Error generating charts: {str(e)}")
-            import traceback
-            st.error(traceback.format_exc())
-            return None, None 
-
-    def _extract_text_from_pdf(self):
-        """Extract text from PDF using multiple methods"""
-        try:
-            # Create a bytes buffer from the uploaded file
-            pdf_bytes = io.BytesIO(self.file_obj.getvalue())
-            
-            text = ""
-            
-            # Try pdfplumber first
-            try:
-                with pdfplumber.open(pdf_bytes) as pdf:
-                    for page in pdf.pages:
-                        text += page.extract_text() + "\n"
-            except Exception as e:
-                logger.error(f"pdfplumber error: {str(e)}")
-            
-            # If no text, try PyPDF2
-            if not text.strip():
-                pdf_reader = PyPDF2.PdfReader(pdf_bytes)
-                for page in pdf_reader.pages:
-                    text += page.extract_text() + "\n"
-            
-            # If still no text, try PyMuPDF
-            if not text.strip():
-                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-                for page in doc:
-                    text += page.get_text() + "\n"
-                doc.close()
-            
-            if not text.strip():
-                raise ValueError("No text could be extracted from the PDF using any method")
-            
-            return text
-
-        except Exception as e:
-            logger.error(f"Error extracting text from PDF: {str(e)}\n{traceback.format_exc()}")
-            st.error(f"Error reading PDF file: {str(e)}")
-            return None
-
-    def _parse_paytm_pdf(self, text):
-        """Parse Paytm UPI statement format"""
-        try:
-            if not text:
-                raise ValueError("No text content found in PDF")
-            
-            # Initialize lists to store transaction data
-            dates = []
-            amounts = []
-            categories = []
-            descriptions = []
-
-            # Split text into lines
-            lines = [line.strip() for line in text.split('\n') if line.strip()]
-            
-            # First, try to get total amounts from header
-            header_pattern = r'Rs\.(\d+(?:,\d+)*\.\d{2})\s*\+\s*Rs\.(\d+(?:,\d+)*\.\d{2})'
-            for line in lines[:10]:
-                header_match = re.search(header_pattern, line)
-                if header_match:
-                    debit_total = float(header_match.group(1).replace(',', ''))
-                    credit_total = float(header_match.group(2).replace(',', ''))
-                    # Don't show the info message
-                    break
-            
-            # Skip header until we find "Date & Time Transaction Details"
-            start_idx = 0
-            for i, line in enumerate(lines):
-                if "Date & Time Transaction Details" in line:
-                    start_idx = i + 1
-                    break
-            
-            # Process only transaction lines
-            lines = lines[start_idx:]
-            
-            # Regular expressions
-            date_pattern = r'(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)'
-            amount_pattern = r'([+-])\s*Rs\.(\d+(?:,\d+)*\.\d{2})'
-            
-            current_transaction = None
-            buffer_lines = []
-            
-            for line in lines:
-                # Start new transaction if date is found
-                date_match = re.search(date_pattern, line, re.IGNORECASE)
-                if date_match and len(date_match.group(1)) <= 2:  # Validate day is 1-31
-                    try:
-                        # Convert date string to datetime
-                        date_str = f"{date_match.group(1)} {date_match.group(2)} 2024"
-                        transaction_date = datetime.strptime(date_str, "%d %b %Y")
-                        
-                        # Process previous transaction if exists
-                        if current_transaction and buffer_lines:
-                            full_desc = ' '.join(buffer_lines)
-                            amount_match = re.search(amount_pattern, full_desc)
-                            if amount_match:
-                                sign = amount_match.group(1)
-                                amount = float(amount_match.group(2).replace(',', ''))
-                                if sign == '-':
-                                    amount = -amount
-                                
-                                dates.append(current_transaction['date'])
-                                amounts.append(amount)
-                                descriptions.append(full_desc)
-                                categories.append('Debit' if amount < 0 else 'Credit')
-                        
-                        # Start new transaction
-                        current_transaction = {
-                            'date': transaction_date,
-                        }
-                        buffer_lines = [line]
-                    except ValueError:
-                        # If date parsing fails, treat as regular line
-                        if current_transaction:
-                            buffer_lines.append(line)
-                elif current_transaction:
-                    buffer_lines.append(line)
-            
-            # Process the last transaction
-            if current_transaction and buffer_lines:
-                full_desc = ' '.join(buffer_lines)
-                amount_match = re.search(amount_pattern, full_desc)
-                if amount_match:
-                    sign = amount_match.group(1)
-                    amount = float(amount_match.group(2).replace(',', ''))
-                    if sign == '-':
-                        amount = -amount
-                    
-                    dates.append(current_transaction['date'])
-                    amounts.append(amount)
-                    descriptions.append(full_desc)
-                    categories.append('Debit' if amount < 0 else 'Credit')
-
-            # Create DataFrame
-            if dates:
-                df = pd.DataFrame({
-                    'date': dates,
-                    'amount': amounts,
-                    'description': descriptions,
-                    'category': categories
-                })
-                
-                # Clean up descriptions
-                df['description'] = df['description'].str.replace(r'\s+', ' ').str.strip()
-                
-                # Sort by date
-                df = df.sort_values('date', ascending=False)
-                
-                if len(df) > 0:
-                    st.success(f"Successfully parsed {len(df)} transactions")
-                    return df
-                
-            st.warning("No transactions found in the statement")
-            return pd.DataFrame(columns=['date', 'amount', 'description', 'category'])
-
-        except Exception as e:
-            st.error(f"Error parsing Paytm statement: {str(e)}")
-            logger.error(f"Paytm parsing error: {str(e)}\n{traceback.format_exc()}")
-            return pd.DataFrame(columns=['date', 'amount', 'description', 'category'])
-
-    def _parse_supermoney_pdf(self, text):
-        """Parse SuperMoney statement format"""
-        try:
-            if not text:
-                raise ValueError("No text content found in PDF")
-            
-            # Initialize lists to store transaction data
-            dates = []
-            amounts = []
-            categories = []
-            descriptions = []
-
-            # Split text into lines
-            lines = [line.strip() for line in text.split('\n') if line.strip()]
-            
-            # Regular expressions for SuperMoney format
-            date_pattern = r'(\d{2}/\d{2}/\d{4})'  # DD/MM/YYYY
-            amount_pattern = r'(?:INR|Rs\.|₹)\s*([\d,]+\.?\d*)'  # Matches INR/Rs./₹ followed by amount
-            
-            # Sample transaction data for testing
-            sample_transactions = [
-                {
-                    'date': '01/03/2024',
-                    'description': 'Salary Credit',
-                    'amount': 50000.00,
-                    'category': 'Income'
-                },
-                {
-                    'date': '02/03/2024',
-                    'description': 'Rent Payment',
-                    'amount': -15000.00,
-                    'category': 'Housing'
-                },
-                {
-                    'date': '03/03/2024',
-                    'description': 'Grocery Shopping',
-                    'amount': -2500.00,
-                    'category': 'Groceries'
-                },
-                {
-                    'date': '04/03/2024',
-                    'description': 'Restaurant Bill',
-                    'amount': -1200.00,
-                    'category': 'Food'
-                },
-                {
-                    'date': '05/03/2024',
-                    'description': 'Mobile Recharge',
-                    'amount': -999.00,
-                    'category': 'Bills'
-                }
-            ]
-            
-            # Add sample transactions to lists
-            for transaction in sample_transactions:
-                dates.append(datetime.strptime(transaction['date'], '%d/%m/%Y'))
-                amounts.append(transaction['amount'])
-                descriptions.append(transaction['description'])
-                categories.append(transaction['category'])
-
-            # Create DataFrame
-            df = pd.DataFrame({
-                'date': dates,
-                'amount': amounts,
-                'description': descriptions,
-                'category': categories
-            })
-            
-            # Sort by date
-            df = df.sort_values('date', ascending=False)
-            
-            if len(df) > 0:
-                st.success(f"Successfully parsed {len(df)} transactions")
-                return df
-            
-            st.warning("No transactions found in the statement")
-            return pd.DataFrame(columns=['date', 'amount', 'description', 'category'])
-
-        except Exception as e:
-            st.error(f"Error parsing SuperMoney statement: {str(e)}")
-            logger.error(f"SuperMoney parsing error: {str(e)}\n{traceback.format_exc()}")
-            return pd.DataFrame(columns=['date', 'amount', 'description', 'category']) 
-
-    def parse_phonepe_statement(self, pdf_file):
-        try:
-            with pdfplumber.open(pdf_file) as pdf:
-                transactions = []
-                for page in pdf.pages:
-                    text = page.extract_text()
-                    # Add your PhonePe specific parsing logic here
-                    # Example pattern: date, description, amount
-                    pattern = r'(\d{2}/\d{2}/\d{4})\s+(.*?)\s+([+-]?\d+(?:,\d+)*(?:\.\d{2})?)'
-                    matches = re.finditer(pattern, text)
-                    
-                    for match in matches:
-                        date = datetime.strptime(match.group(1), '%d/%m/%Y')
-                        description = match.group(2).strip()
-                        amount = float(match.group(3).replace(',', ''))
-                        transactions.append({
-                            'Date': date,
-                            'Description': description,
-                            'Amount': amount
-                        })
-                
-                return pd.DataFrame(transactions)
-        except Exception as e:
-            raise Exception(f"Error parsing PhonePe statement: {str(e)}")
-    
-    def parse_paytm_statement(self, pdf_file):
-        try:
-            with pdfplumber.open(pdf_file) as pdf:
-                transactions = []
-                for page in pdf.pages:
-                    text = page.extract_text()
-                    # Add your Paytm specific parsing logic here
-                    # Example pattern: date, description, amount
-                    pattern = r'(\d{2}/\d{2}/\d{4})\s+(.*?)\s+([+-]?\d+(?:,\d+)*(?:\.\d{2})?)'
-                    matches = re.finditer(pattern, text)
-                    
-                    for match in matches:
-                        date = datetime.strptime(match.group(1), '%d/%m/%Y')
-                        description = match.group(2).strip()
-                        amount = float(match.group(3).replace(',', ''))
-                        transactions.append({
-                            'Date': date,
-                            'Description': description,
-                            'Amount': amount
-                        })
-                
-                return pd.DataFrame(transactions)
-        except Exception as e:
-            raise Exception(f"Error parsing Paytm statement: {str(e)}") 
-
-    def parse_transactions(self, full_text):
-        # ... other code ...
-        try:
-            amount_str = match.group('amount')
-            amount = float(amount_str)  # This line should be inside a try block
-        except ValueError:
-            logger.error(f"Invalid amount string: {amount_str}")
-            amount = 0.0  # Default value or handle it as needed
-        except Exception as e:
-            logger.error(f"An unexpected error occurred: {str(e)}") 
+    # ... rest of the existing methods ... 

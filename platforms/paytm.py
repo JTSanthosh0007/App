@@ -1,8 +1,20 @@
 import streamlit as st
 from statement_parser import StatementParser
 import pandas as pd
+import time
 
-def show_paytm_page(username):
+def show_paytm_page(username=None):
+    st.title("Paytm Statement Analysis")
+    
+    uploaded_file = st.file_uploader("Upload your Paytm statement (PDF)", type=['pdf'])
+    
+    if uploaded_file:
+        parser = StatementParser(uploaded_file)
+        df = parser.parse()
+        if not df.empty:
+            st.success("Statement processed successfully!")
+            st.dataframe(df)
+
     # Use full page width and clean styling
     st.markdown("""
         <style>
@@ -106,11 +118,21 @@ def show_paytm_page(username):
                 parser = StatementParser(uploaded_file)
                 
                 # Parse the statement
-                df = parser.parse()  # Use the general parse method
+                df = parser.parse()
                 
                 if df is not None and not df.empty:
-                    # Show success message
-                    st.success("Statement processed successfully!")
+                    # Create placeholder for transaction message
+                    message_placeholder = st.empty()
+                    message_placeholder.success(f"Successfully extracted {len(df)} transactions.")
+                    
+                    # Create another placeholder for processing message
+                    process_placeholder = st.empty()
+                    process_placeholder.success("Statement processed successfully!")
+                    
+                    # Wait for 3 seconds then clear the messages
+                    time.sleep(3)
+                    message_placeholder.empty()
+                    process_placeholder.empty()
                     
                     # Basic Statistics
                     st.subheader("Transaction Summary")
