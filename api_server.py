@@ -29,7 +29,8 @@ app.logger.addHandler(handler)
 app.logger.setLevel(logging.INFO)
 
 # Initialize Firebase Admin
-cred = credentials.Certificate('firebase-service-account.json')
+firebase_service_account_info = json.loads(os.getenv('FIREBASE_SERVICE_ACCOUNT'))
+cred = credentials.Certificate(firebase_service_account_info)
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
@@ -64,7 +65,7 @@ def verify_email():
             return jsonify({"error": "Invalid email format"}), 400
             
         hashed_password = hash_password(password)
-        
+            
         # Check if user exists
         users_ref = db.collection('users')
         query = users_ref.where('email', '==', email).limit(1)
@@ -135,7 +136,7 @@ def create_user():
                 "username": username
             }
         }), 201
-        
+            
     except Exception as e:
         app.logger.error(f"Error in create_user: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
