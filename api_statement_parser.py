@@ -15,21 +15,28 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class StatementParser:
-    def __init__(self, file_path):
-        self.file_path = file_path
-        self.filename = Path(file_path).name
+    def __init__(self, file_source):
+        # file_source can be a file path (string or Path object) or a file-like object
+        self.file_source = file_source
+        self.filename = getattr(file_source, 'name', 'uploaded_file') # Get name if file object
 
     def parse(self):
         """Parse the file into a standardized DataFrame"""
-        if self.filename.endswith('.pdf'):
-            return self._parse_pdf()
+        if isinstance(self.file_source, (str, Path)):
+             if str(self.file_source).endswith('.pdf'):
+                return self._parse_pdf(open(self.file_source, 'rb'))
+             else:
+                raise ValueError("Unsupported file format")
+        elif hasattr(self.file_source, 'read'): # Check if it's a file-like object
+            # Assuming it's a PDF file-like object
+            return self._parse_pdf(self.file_source)
         else:
-            raise ValueError("Unsupported file format")
+            raise ValueError("Unsupported file source type")
 
-    def _parse_pdf(self):
+    def _parse_pdf(self, pdf_file_obj):
         """Handle PDF parsing with comprehensive extraction"""
         try:
-            with open(self.file_path, 'rb') as file, pdfplumber.open(file) as pdf:
+            with pdfplumber.open(pdf_file_obj) as pdf:
                 all_extracted_text = []
                 
                 # Transaction patterns
@@ -164,49 +171,48 @@ class StatementParser:
         
         return 'Others'
 
-def main():
+def parse_statement_from_file(file_source):
+    """Function to parse a statement from a file-like object or path."""
+    statement_parser = StatementParser(file_source)
+    df = statement_parser.parse()
+    
+    # Convert DataFrame to dictionary format
+    transactions = []
+    for _, row in df.iterrows():
+        transactions.append({
+            'date': row['date'].strftime('%Y-%m-%d'),
+            'amount': float(row['amount']),
+            'description': str(row['description']) if 'description' in row else '',
+            'category': str(row['category'])
+        })
+
+    # Calculate totals
+    total_received = float(df[df['amount'] > 0]['amount'].sum())
+    total_spent = float(df[df['amount'] < 0]['amount'].sum())
+    
+    # Calculate category breakdown
+    category_breakdown = df[df['amount'] < 0].groupby('category')['amount'].sum().to_dict()
+    category_breakdown = {k: float(v) for k, v in category_breakdown.items()}
+
+    # Create response object
+    response = {
+        'transactions': transactions,
+        'totalReceived': total_received,
+        'totalSpent': total_spent,
+        'categoryBreakdown': category_breakdown
+    }
+    return response
+
+if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Parse bank statements')
     parser.add_argument('file_path', help='Path to the PDF statement file')
     args = parser.parse_args()
 
     try:
-        statement_parser = StatementParser(args.file_path)
-        df = statement_parser.parse()
-        
-        # Convert DataFrame to dictionary format
-        transactions = []
-        for _, row in df.iterrows():
-            transactions.append({
-                'date': row['date'].strftime('%Y-%m-%d'),
-                'amount': float(row['amount']),
-                'description': str(row['description']) if 'description' in row else '',
-                'category': str(row['category'])
-            })
-
-        # Calculate totals
-        total_received = float(df[df['amount'] > 0]['amount'].sum())
-        total_spent = float(df[df['amount'] < 0]['amount'].sum())
-        
-        # Calculate category breakdown
-        category_breakdown = df[df['amount'] < 0].groupby('category')['amount'].sum().to_dict()
-        category_breakdown = {k: float(v) for k, v in category_breakdown.items()}
-
-        # Create response object
-        response = {
-            'transactions': transactions,
-            'totalReceived': total_received,
-            'totalSpent': total_spent,
-            'categoryBreakdown': category_breakdown
-        }
-
-        # Print JSON output
-        print(json.dumps(response))
+        results = parse_statement_from_file(args.file_path)
+        print(json.dumps(results))
         sys.exit(0)
-
     except Exception as e:
         error_response = {'error': str(e)}
         print(json.dumps(error_response), file=sys.stderr)
-        sys.exit(1)
-
-if __name__ == '__main__':
-    main() 
+        sys.exit(1) 
