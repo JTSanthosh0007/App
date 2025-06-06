@@ -11,7 +11,7 @@ const nextConfig = {
         headers: [
           {
             key: 'Content-Security-Policy',
-            value: `connect-src \'self\' https://app-sicb.onrender.com;`
+            value: `default-src 'self'; connect-src 'self' https://app-sicb.onrender.com; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self';`
           },
         ]
       },
