@@ -603,19 +603,19 @@ export const PhonePeAnalysisView: React.FC<{
       const formData = new FormData();
       formData.append('file', file);
 
-      const response = await fetch('/api/analyze-statement', {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/analyze-statement`, {
         method: 'POST',
         body: formData,
       });
 
-      const data = await response.json();
-      console.log('API Response:', data);
-
-      if (!response.ok) {
-        // Extract detailed error message if available
-        const errorMessage = data.details || data.error || 'Analysis failed';
-        throw new Error(errorMessage);
+      if (!res.ok) {
+        const errorData = await res.json();
+        console.error("API error:", errorData);
+        throw new Error(errorData.error || "Failed to analyze statement");
       }
+
+      const data = await res.json();
+      console.log('API Response:', data);
 
       // Ensure pageCount is properly set from the response
       const results: AnalysisResult = {

@@ -56,7 +56,8 @@ export default function KotakPage() {
     formData.append('file', file);
 
     try {
-      const response = await fetch('/api/analyze-statement', {
+      const apiUrl = `${process.env.NEXT_PUBLIC_API_URL}/api/analyze-statement`;
+      const response = await fetch(apiUrl, {
         method: 'POST',
         body: formData,
       });

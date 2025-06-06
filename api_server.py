@@ -1,83 +1,104 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-import uvicorn
-from statement_parser import StatementParser
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
+import os
+from dotenv import load_dotenv
+import json
+from datetime import datetime
+import logging
+from logging.handlers import RotatingFileHandler
+from api_statement_parser import parse_statement_from_file # Import the parsing function
 import io
+import traceback
 
-app = FastAPI()
+# Load environment variables
+load_dotenv()
 
-# Enable CORS with simpler configuration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Initialize Flask app
+app = Flask(__name__)
+CORS(app)
 
-class FileObject:
-    def __init__(self, filename, content):
-        self.name = filename
-        self._content = content
+# Configure logging
+if not os.path.exists('logs'):
+    os.makedirs('logs')
+handler = RotatingFileHandler('logs/api.log', maxBytes=10000, backupCount=1)
+handler.setFormatter(logging.Formatter(
+    '[%(asctime)s] %(levelname)s in %(module)s: %(message)s'
+))
+app.logger.addHandler(handler)
+app.logger.setLevel(logging.INFO)
 
-    def read(self, *args):
-        return self._content
+# API Routes
+@app.route('/')
+def index():
+    return jsonify({
+        'status': 'API is running',
+        'endpoints': {
+            'health': '/health',
+            'analyze': '/analyze-statement'
+        },
+        'version': '1.0.0'
+    })
 
-@app.post("/analyze")
-async def analyze_statement(
-    file: UploadFile = File(...),
-    platform: str = Form(...)
-):
+@app.route('/health')
+def health_check():
+    return jsonify({"status": "healthy"}), 200
+
+@app.route('/analyze-statement', methods=['POST'])
+def analyze_statement():
+    app.logger.info('Received analyze-statement request')
     try:
-        if not file:
-            raise HTTPException(status_code=400, detail="No file provided")
+        # Check if a file is included in the request
+        if 'file' not in request.files:
+            app.logger.warning('No file part in request')
+            return jsonify({'error': 'No file part in request'}), 400
 
-        # Read the file content
-        content = await file.read()
+        file = request.files['file']
+        app.logger.info(f'Received file: {file.filename}')
+
+        # If the user does not select a file, the browser submits an
+        # empty file without a filename.
+        if file.filename == '':
+            app.logger.warning('No selected file')
+            return jsonify({'error': 'No selected file'}), 400
+
+        if not file.filename.lower().endswith('.pdf'):
+            app.logger.warning(f'Invalid file type: {file.filename}')
+            return jsonify({'error': 'Only PDF files are supported'}), 400
+
+        # Pass the file stream to the parsing function
+        file_stream = io.BytesIO(file.read())
+        file_stream.name = file.filename  # Preserve the filename
+        app.logger.info('Starting statement parsing')
         
-        # Create a proper file-like object
-        file_obj = FileObject(file.filename, content)
-        
-        try:
-            # Parse the statement
-            parser = StatementParser(file_obj)
-            df = parser.parse()
-            
-            # Convert to dictionary format
-            transactions = df.to_dict('records')
-            
-            # Calculate summary statistics
-            total_spent = sum(t['amount'] for t in transactions if t['amount'] < 0)
-            total_received = sum(t['amount'] for t in transactions if t['amount'] > 0)
-            
-            # Calculate category breakdown
-            category_breakdown = {}
-            for t in transactions:
-                if t['amount'] < 0:  # Only consider spending
-                    category = t['category']
-                    category_breakdown[category] = category_breakdown.get(category, 0) + t['amount']
-            
-            return {
-                "transactions": transactions,
-                "totalSpent": total_spent,
-                "totalReceived": total_received,
-                "categoryBreakdown": category_breakdown
-            }
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
-            
+        results = parse_statement_from_file(file_stream)
+        app.logger.info('Successfully parsed statement')
+        return jsonify(results), 200
+
     except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=500, detail=str(e))
+        app.logger.error(f'Error processing file: {str(e)}')
+        app.logger.error(traceback.format_exc())
+        return jsonify({
+            'error': 'Error processing file',
+            'details': str(e)
+        }), 500
 
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request, exc):
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"error": exc.detail}
-    )
+# Error handlers
+@app.errorhandler(404)
+def not_found_error(error):
+    return jsonify({
+        'error': 'Not Found',
+        'message': 'The requested URL was not found on the server.',
+        'available_endpoints': ['/', '/health', '/analyze-statement']
+    }), 404
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({
+        'error': 'Internal Server Error',
+        'message': 'An unexpected error occurred.'
+    }), 500
+
+if __name__ == '__main__':
+    port = int(os.getenv('PORT', 5000))
+    app.logger.info(f'Starting server on port {port}')
+    app.run(host='0.0.0.0', port=port) 
