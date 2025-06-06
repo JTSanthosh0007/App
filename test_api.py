@@ -2,8 +2,10 @@ import requests
 import sys
 import os
 
+API_BASE_URL = "https://app-sicb.onrender.com"
+
 def test_health():
-    response = requests.get('http://localhost:5000/health')
+    response = requests.get(f'{API_BASE_URL}/health')
     print(f"Health check response: {response.status_code}")
     print(response.json())
 
@@ -14,7 +16,7 @@ def test_analyze_statement(pdf_path):
 
     with open(pdf_path, 'rb') as f:
         files = {'file': (os.path.basename(pdf_path), f, 'application/pdf')}
-        response = requests.post('http://localhost:5000/analyze-statement', files=files)
+        response = requests.post(f'{API_BASE_URL}/analyze-statement', files=files)
         
         print(f"Analysis response status: {response.status_code}")
         try:
